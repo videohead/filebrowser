@@ -88,13 +88,17 @@ The path must be for a json or yaml file.`,
 			var a interface{}
 			a, autherErr = getAuther(&auth.HookAuth{}, rawAuther)
 			auther = a.(*auth.HookAuth)
-		default:
-			return errors.New("invalid auth method")
-		}
+                case auth.MethodPostgresAuth:
+                        var a interface{}
+                        a, autherErr = getAuther(&auth.PostgresAuth{}, rawAuther)
+                        auther = a.(*auth.PostgresAuth)
+                default:
+                        return errors.New("invalid auth method")
+                }
 
-		if autherErr != nil {
-			return autherErr
-		}
+                if autherErr != nil {
+                        return autherErr
+                }
 
 		err = st.Auth.Save(auther)
 		if err != nil {

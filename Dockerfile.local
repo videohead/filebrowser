@@ -1,0 +1,68 @@
+# Local build of File Browser with the postgres auth method.
+#
+# Build context: /opt/filebrowser (repo root)
+#   docker build -f Dockerfile.local -t local/filebrowser-pg:latest .
+#
+# Stage 1 fetches runtime bits absent from busybox (tini, CA certs);
+# stage 2 builds the Vue frontend; stage 3 builds the Go backend (the
+# frontend dist is embedded into the binary); stage 4 assembles the
+# busybox runtime image following the upstream Dockerfile layout
+# (init.sh -> /config/settings.json, /database/filebrowser.db, /srv).
+
+FROM alpine:3.23 AS fetcher
+RUN apk update && \
+    apk --no-cache add ca-certificates mailcap tini-static && \
+    wget -O /JSON.sh https://raw.githubusercontent.com/dominictarr/JSON.sh/0d5e5c77365f63809bf6e77ef44a1f34b0e05840/JSON.sh
+
+FROM node:24-alpine AS frontend
+WORKDIR /app
+RUN corepack enable
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY frontend/ ./
+RUN pnpm run build
+
+FROM golang:1.25-alpine AS backend
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=frontend /app/dist ./frontend/dist
+ARG VERSION=dev
+ARG GIT_COMMIT=local
+RUN CGO_ENABLED=0 go build -ldflags="-s -w \
+  -X 'github.com/filebrowser/filebrowser/v2/version.Version=${VERSION}' \
+  -X 'github.com/filebrowser/filebrowser/v2/version.CommitSHA=${GIT_COMMIT}'" \
+  -o /out/filebrowser .
+
+FROM busybox:1.37.0-musl
+
+ENV UID=1000
+ENV GID=1000
+
+RUN addgroup -g $GID user && \
+    adduser -D -u $UID -G user user
+
+COPY --from=backend --chown=user:user /out/filebrowser /bin/filebrowser
+COPY --chown=user:user docker/common/ /
+COPY --chown=user:user docker/alpine/ /
+COPY --chown=user:user --from=fetcher /sbin/tini-static /bin/tini
+COPY --from=fetcher /JSON.sh /JSON.sh
+COPY --from=fetcher /etc/ca-certificates.conf /etc/ca-certificates.conf
+COPY --from=fetcher /etc/ca-certificates /etc/ca-certificates
+COPY --from=fetcher /etc/ssl /etc/ssl
+COPY --from=fetcher /etc/mime.types /etc/mime.types
+
+RUN mkdir -p /config /database /srv && \
+    chown -R user:user /config /database /srv && \
+    chmod +x /healthcheck.sh
+
+HEALTHCHECK --start-period=2s --interval=5s --timeout=3s CMD /healthcheck.sh
+
+USER user
+
+VOLUME /srv /config /database
+
+EXPOSE 80
+
+ENTRYPOINT [ "tini", "--", "/init.sh" ]

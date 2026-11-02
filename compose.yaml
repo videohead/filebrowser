@@ -1,32 +1,64 @@
+# File Browser — project deployment
+#
+# Routed through Traefik at https://videohead.duckdns.org/filebrowser
+# (see /opt/traefik/dynamic.yml). The container listens on loopback only;
+# Traefik terminates TLS and does the routing.
+#
+# Auth:
+#   Custom image (Dockerfile.local) adds a "postgres" auth method. Logins
+#   are validated against the chatbot project's Postgres "User" table
+#   (email + bcrypt password + isAuthorized) in litellm_db, reached via
+#   the dedicated external network "filebrowser-postgres" (litellm_db is
+#   the only other member; no other services are involved). Chatbot users
+#   log into File Browser with their chatbot credentials; a matching File
+#   Browser account is auto-provisioned on first login (non-admin, exec
+#   disabled). The DB password is supplied at runtime via the
+#   FB_POSTGRES_PASSWORD variable in ./.env (gitignored, loaded through
+#   env_file so its value is passed through verbatim); it is never
+#   persisted in the bolt database or committed files.
+#
+# Permissions model:
+#   - The image's default runtime user is UID 1000 / GID 1000.
+#   - We override the group to 1005 (the host "optusers" group) via `user:`
+#     so files the container creates are group-owned by optusers.
+#   - The bind-mounted data dir is group-owned by optusers with the setgid
+#     bit, so new files inherit group ownership and stay group-writable.
+#   - /opt is already drwsrwsr-x videohead:optusers, so optusers members can
+#     reach the data dir.
+#
+# NOTE: File Browser is archived (2026-09-01). Keep it behind the reverse
+# proxy, keep the command runner disabled (default), and treat it as
+# unmaintained software.
 services:
   filebrowser:
+    # Custom build with a "postgres" auth method that validates logins
+    # against the chatbot project's User table (Postgres, litellm_db).
+    # Build: docker build -f Dockerfile.local -t local/filebrowser-pg:latest .
+    image: local/filebrowser-pg:latest
     container_name: filebrowser
-    image: filebrowser/filebrowser:latest
-    networks:
-      - filebrowser
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Run as the image's default UID (1000) but with the host optusers GID
+    # (1005) so created files are group-owned by optusers.
+    user: "1000:1005"
     ports:
-      - 8000:80
+      - "127.0.0.1:8090:80"
     volumes:
-      - filebrowser:/flux/vault
-    environment:
-      - FB_REDIS_CACHE_URL=redis://default:filebrowser@redis:6379 # Use rediss:// for ssl
-
-  redis:
-    container_name: redis
-    image: redis:latest
+      # Served files root (container /srv): the whole /opt tree. All users
+      # default to the full root scope, so they land in /opt.
+      - /opt:/srv
+      # Database (users, settings) — container /database
+      - ./data/database:/database
+      # settings.json — container /config
+      - ./data/config:/config
     networks:
-      - filebrowser
-    command:
-      - sh
-      - -c
-      - |
-        cat > /tmp/users.acl <<EOF
-        user default on >filebrowser ~* +@all
-        EOF
-        redis-server --aclfile /tmp/users.acl
+      - default
+      # Postgres-only network: gives filebrowser a route to litellm_db
+      # (the chatbot database host) without joining metis-network.
+      - filebrowser-postgres
+    # Keep the command runner disabled (default). Do not set FB_DISABLE_EXEC=false.
 
 networks:
-  filebrowser:
-
-volumes:
-  filebrowser:
+  filebrowser-postgres:
+    external: true

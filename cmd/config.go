@@ -42,10 +42,17 @@ func addConfigFlags(flags *pflag.FlagSet) {
 	flags.String("fileMode", fmt.Sprintf("%O", settings.DefaultFileMode), "mode bits that new files are created with")
 	flags.String("dirMode", fmt.Sprintf("%O", settings.DefaultDirMode), "mode bits that new directories are created with")
 
-	flags.String("auth.method", string(auth.MethodJSONAuth), "authentication type")
-	flags.String("auth.header", "", "HTTP header for auth.method=proxy")
-	flags.String("auth.command", "", "command for auth.method=hook")
-	flags.String("auth.logoutPage", "", "url of custom logout page")
+flags.String("auth.method", string(auth.MethodJSONAuth), "authentication type (json, proxy, hook, noauth, postgres)")
+        flags.String("auth.header", "", "HTTP header for auth.method=proxy")
+        flags.String("auth.command", "", "command for auth.method=hook")
+        flags.String("auth.logoutPage", "", "url of custom logout page")
+        flags.String("auth.postgres.host", "", "database host for auth.method=postgres")
+        flags.String("auth.postgres.port", "5432", "database port for auth.method=postgres")
+        flags.String("auth.postgres.database", "", "database name for auth.method=postgres")
+        flags.String("auth.postgres.user", "", "database user for auth.method=postgres")
+        flags.String("auth.postgres.password", "", "database password for auth.method=postgres")
+        flags.String("auth.postgres.passwordFile", "", "file containing the database password for auth.method=postgres (preferred over auth.postgres.password)")
+        flags.String("auth.postgres.sslmode", "disable", "sslmode for auth.method=postgres")
 
 	flags.String("recaptcha.host", "https://www.google.com", "use another host for ReCAPTCHA. recaptcha.net might be useful in China")
 	flags.String("recaptcha.key", "", "ReCaptcha site key")
@@ -114,9 +121,63 @@ func getNoAuth() auth.Auther {
 	return &auth.NoAuth{}
 }
 
+func getPostgresAuth(flags *pflag.FlagSet, defaultAuther map[string]interface{}) (auth.Auther, error) {
+    pgAuth := &auth.PostgresAuth{}
+    if defaultAuther != nil {
+        if s, ok := defaultAuther["host"].(string); ok {
+            pgAuth.Host = s
+        }
+        if s, ok := defaultAuther["port"].(string); ok {
+            pgAuth.Port = s
+        }
+        if s, ok := defaultAuther["database"].(string); ok {
+            pgAuth.Database = s
+        }
+        if s, ok := defaultAuther["user"].(string); ok {
+            pgAuth.User = s
+        }
+        if s, ok := defaultAuther["password"].(string); ok {
+            pgAuth.Password = s
+        }
+        if s, ok := defaultAuther["passwordFile"].(string); ok {
+            pgAuth.PasswordFile = s
+        }
+        if s, ok := defaultAuther["sslmode"].(string); ok {
+            pgAuth.SSLMode = s
+        }
+    }
+
+    strFlags := []struct {
+        name   string
+        target *string
+    }{
+        {"auth.postgres.host", &pgAuth.Host},
+        {"auth.postgres.port", &pgAuth.Port},
+        {"auth.postgres.database", &pgAuth.Database},
+        {"auth.postgres.user", &pgAuth.User},
+        {"auth.postgres.password", &pgAuth.Password},
+        {"auth.postgres.passwordFile", &pgAuth.PasswordFile},
+        {"auth.postgres.sslmode", &pgAuth.SSLMode},
+    }
+    for _, f := range strFlags {
+        v, err := flags.GetString(f.name)
+        if err != nil {
+            return nil, err
+        }
+        if v != "" {
+            *f.target = v
+        }
+    }
+
+    if pgAuth.Host == "" || pgAuth.Database == "" || pgAuth.User == "" {
+        return nil, errors.New("you must set the flags 'auth.postgres.host', 'auth.postgres.database' and 'auth.postgres.user' for method 'postgres'")
+    }
+
+    return pgAuth, nil
+}
 func getJSONAuth(flags *pflag.FlagSet, defaultAuther map[string]interface{}) (auth.Auther, error) {
-	jsonAuth := &auth.JSONAuth{}
-	host, err := flags.GetString("recaptcha.host")
+        jsonAuth := &auth.JSONAuth{}
+        host, err := flags.GetString("recaptcha.host")
 	if err != nil {
 		return nil, err
 	}
@@ -185,12 +246,10 @@ func getAuthentication(flags *pflag.FlagSet, defaults ...interface{}) (settings.
 		auther, err = getJSONAuth(flags, defaultAuther)
 	case auth.MethodHookAuth:
 		auther, err = getHookAuth(flags, defaultAuther)
-	default:
-		return "", nil, fberrors.ErrInvalidAuthMethod
-	}
-
-	if err != nil {
-		return "", nil, err
+        case auth.MethodPostgresAuth:
+                auther, err = getPostgresAuth(flags, defaultAuther)
+        default:
+                return "", nil, fberrors.ErrInvalidAuthMethod
 	}
 
 	return method, auther, nil

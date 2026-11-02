@@ -12,8 +12,12 @@ rice-box.go
 node_modules
 
 # local env files
+.env
 .env.local
 .env.*.local
+
+# local runtime data (bolt DB, settings, uploaded files, secrets)
+/data/
 
 # Log files
 npm-debug.log*
